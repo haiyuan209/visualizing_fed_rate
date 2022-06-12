@@ -1,0 +1,80 @@
+from keys import key
+import seaborn as sns
+import sklearn.mixture as mix
+import numpy as np
+from matplotlib import cm
+import matplotlib.pyplot as plt
+from fredapi import Fred
+from datetime import date, timedelta
+import pandas as pd
+from pandas_datareader import data as pdr
+import yfinance as yf
+from matplotlib.dates import YearLocator, MonthLocator
+yf.pdr_override()
+
+
+def main():
+    f1 = 'T10Y3M'
+    ticker = 'ES=F'
+    fred = Fred(api_key=key)
+    start = date.today()-timedelta(days=365*5)
+    end = date.today()
+
+    MKT = pdr.get_data_yahoo(ticker, start=start, end=end)["Adj Close"].rename(
+        ticker).to_frame().assign(sret=lambda x: np.log(x[ticker]/x[ticker].shift(1))).dropna()
+    data = fred.get_series(f1).rename(
+        f1).to_frame().join(MKT, how='inner').dropna()
+
+    print(data)
+
+    col = 'sret'
+    select = data.copy(deep=False)
+    ft_cols = [f1, 'sret']
+    X = select[ft_cols].values
+
+    model = mix.GaussianMixture(n_components=3,
+                                covariance_type="full",
+                                n_init=100,
+                                random_state=7).fit(X)
+    hidden_states = model.predict(X)
+
+    sns.set(font_scale=1.25)
+    style_kwds = {'xtick.major.size': 3, 'ytick.major.size': 3,
+                  'font.family': u'DejaVu Sans', 'legend.frameon': True}
+    sns.set_style('white', style_kwds)
+    fig, axs = plt.subplots(model.n_components, sharex=True,
+                            sharey=True, figsize=(12, 9))
+    colors = cm.rainbow(np.linspace(0, 1, model.n_components))
+
+    for i, (ax, color) in enumerate(zip(axs, colors)):
+        mask = hidden_states == i
+        ax.plot_date(select.index.values[mask],
+                     select[col].values[mask],
+                     ".-", c=color)
+        ax.set_title("{0}th hidden state".format(i),
+                     fontsize=16, fontweight='demi')
+        ax.xaxis.set_major_locator(YearLocator())
+        ax.xaxis.set_minor_locator(MonthLocator())
+        sns.despine(offset=10)
+
+    plt.tight_layout()
+    fig.savefig('Regime_Subplots.png')
+
+    sns.set(font_scale=1.5)
+    states = (pd.DataFrame(hidden_states, columns=['states'], index=select.index)
+              .join(select, how='inner')
+              .assign(mkt_cret=select.sret.cumsum())
+              .reset_index(drop=False)
+              .rename(columns={'index': 'Date'}))
+    sns.set_style('white', style_kwds)
+    order = [0, 1, 2]
+    fg = sns.FacetGrid(data=states, hue='states', hue_order=order,
+                       palette=colors, aspect=1.31, height=12)
+    fg.map(plt.scatter, 'Date', ticker, alpha=0.8).add_legend()
+    sns.despine(offset=10)
+    fg.fig.suptitle('Historical ES=F Regimes', fontsize=24, fontweight='demi')
+    fg.savefig('Regimes.png')
+
+
+if __name__ == '__main__':
+    main()
